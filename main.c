@@ -54,6 +54,62 @@ struct state {
         char *socket;
 };
 
+struct output_info {
+        struct wl_list link; // This node will be linked to our original outputs wl_list
+                             // so we can access this object from anywhere through the
+                             // server state
+        struct state *state;
+        struct wlr_output *output;
+        struct wl_listener listener_frame;
+        struct wl_listener listener_request_state;
+        struct wl_listener listener_destroy;
+};
+
+void handle_output_frame(struct wl_listener *listener, void *data)
+{
+        struct output_info *output_info = wl_container_of(listener, output_info, listener_frame);
+        struct wlr_output_event_frame *event = (struct wlr_output_event_frame *)data;
+        struct wlr_scene_output *scene_output;
+        struct timespec now;
+
+        wlr_log(WLR_INFO, "Output frame");
+
+        // Get the scene output for this output and commit changes (if needed)
+        scene_output = wlr_scene_get_scene_output(output_info->state->scene, output_info->output);
+        wlr_scene_output_commit(scene_output, NULL);
+
+        // Complete the queued frame callbacks for all surfaces of this scene output
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	wlr_scene_output_send_frame_done(scene_output, &now);
+}
+
+void handle_output_request_state(struct wl_listener *listener, void *data)
+{
+        struct output_info *output_info = wl_container_of(listener, output_info, listener_request_state);
+        struct wlr_output_event_request_state *event = (struct wlr_output_event_request_state *)data;
+        
+        wlr_log(WLR_INFO, "Output request state");
+
+        // Simply commit the requested output state, no questions asked
+        wlr_output_commit_state(output_info->output, event->state);
+}
+
+void handle_output_destroy(struct wl_listener *listener, void *data)
+{
+        struct output_info *output_info = wl_container_of(listener, output_info, listener_destroy);
+
+        wlr_log(WLR_INFO, "Output destroy");
+
+        wl_list_remove(&output_info->listener_frame.link);
+        wl_list_remove(&output_info->listener_request_state.link);
+        wl_list_remove(&output_info->listener_destroy.link);
+
+        // Remove output from outputs
+        wl_list_remove(&output_info->link);
+
+        free(output_info);
+}
+
 void handle_new_output(struct wl_listener *listener, void *data)
 {
         // NOTE: wl_container_of is basically a fancy `offsetof`
@@ -61,6 +117,9 @@ void handle_new_output(struct wl_listener *listener, void *data)
         struct wlr_output *output = (struct wlr_output *)data;
         struct wlr_output_state output_state;
         struct wlr_output_mode *output_mode;
+        struct output_info *output_info;
+        struct wlr_output_layout_output *layout_output;
+        struct wlr_scene_output *scene_output;
 
         wlr_log(WLR_INFO, "New output");
 
@@ -79,6 +138,31 @@ void handle_new_output(struct wl_listener *listener, void *data)
         // Commit the output state
         wlr_output_commit_state(output, &output_state);
         wlr_output_state_finish(&output_state);
+
+        // Allocate new custom state for this output
+        output_info = (struct output_info *)malloc(sizeof(*output_info));
+        output_info->state = state;
+        output_info->output = output;
+
+        // Setup listeners for new output
+        output_info->listener_frame.notify = handle_output_frame; // render frames
+        wl_signal_add(&output->events.frame, &output_info->listener_frame);
+
+        output_info->listener_request_state.notify = handle_output_request_state; // handles resolution change and other output state requests
+        wl_signal_add(&output->events.request_state, &output_info->listener_request_state);
+
+        output_info->listener_destroy.notify = handle_output_destroy;
+        wl_signal_add(&output->events.destroy, &output_info->listener_destroy);
+
+        // Link this output on the outputs linked list
+        wl_list_insert(&state->outputs, &output_info->link);
+
+        // Add this output to output layout
+        layout_output = wlr_output_layout_add_auto(state->output_layout, output);
+
+        // Create wlr_scene_output to handle how the wlr_scene should be rendered on this output
+        scene_output = wlr_scene_output_create(state->scene, output);
+        wlr_scene_output_layout_add_output(state->scene_layout, layout_output, scene_output);
 }
 
 
