@@ -12,6 +12,7 @@
 #include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_xcursor_manager.h>
 #include <wlr/types/wlr_seat.h>
+#include <wlr/types/wlr_output.h>
 #include <stdlib.h>
 
 struct state {
@@ -55,9 +56,29 @@ struct state {
 
 void handle_new_output(struct wl_listener *listener, void *data)
 {
+        // NOTE: wl_container_of is basically a fancy `offsetof`
+        struct state *state = (struct state *)wl_container_of(listener, state, listener_new_output);
+        struct wlr_output *output = (struct wlr_output *)data;
+        struct wlr_output_state output_state;
+        struct wlr_output_mode *output_mode;
+
         wlr_log(WLR_INFO, "New output");
 
-        // TODO: Implement
+        // Configure output to use our renderer and allocator
+        wlr_output_init_render(output, state->allocator, state->renderer);
+
+        // Turn on the output if it's disabled
+        wlr_output_state_init(&output_state);
+        wlr_output_state_set_enabled(&output_state, true);
+
+        // Use output's preferred mode (if it exists and the backend supports it)
+        output_mode = wlr_output_preferred_mode(output);
+        if (output_mode)
+                wlr_output_state_set_mode(&output_state, output_mode);
+
+        // Commit the output state
+        wlr_output_commit_state(output, &output_state);
+        wlr_output_state_finish(&output_state);
 }
 
 
