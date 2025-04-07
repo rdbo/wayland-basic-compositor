@@ -14,6 +14,7 @@
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_output.h>
 #include <stdlib.h>
+#include <stdbool.h>
 
 struct state {
         struct wl_display *display;
@@ -168,9 +169,11 @@ void handle_new_output(struct wl_listener *listener, void *data)
 
 void handle_cursor_motion(struct wl_listener *listener, void *data)
 {
+        struct state *state = (struct state *)wl_container_of(listener, state, listener_cursor_motion);
+
         wlr_log(WLR_INFO, "Cursor motion");
 
-        // TODO: Implement
+        wlr_cursor_set_xcursor(state->cursor, state->xcursor_manager, "default");
 }
 
 void handle_cursor_motion_absolute(struct wl_listener *listener, void *data)
@@ -197,11 +200,18 @@ void handle_cursor_axis(struct wl_listener *listener, void *data)
 void handle_cursor_frame(struct wl_listener *listener, void *data)
 {
         struct state *state = wl_container_of(listener, state, listener_cursor_frame);
+        static bool is_first_frame = true;
 
         wlr_log(WLR_INFO, "Cursor frame");
 
+        // Set default xcursor theme on first frame
+        // (without this it will only trigger on first mouse motion)
+        if (is_first_frame) {
+                wlr_cursor_set_xcursor(state->cursor, state->xcursor_manager, "default");
+                is_first_frame = false;
+        }
+
         // Notify focused client of the mouse frame event
-        wlr_cursor_set_xcursor(state->cursor, state->xcursor_manager, "default"); // TODO: Move this elsewhere
         wlr_seat_pointer_notify_frame(state->seat);
 }
 
