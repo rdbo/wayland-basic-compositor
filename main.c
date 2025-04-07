@@ -196,23 +196,47 @@ void handle_cursor_axis(struct wl_listener *listener, void *data)
 
 void handle_cursor_frame(struct wl_listener *listener, void *data)
 {
+        struct state *state = wl_container_of(listener, state, listener_cursor_frame);
+
         wlr_log(WLR_INFO, "Cursor frame");
 
-        // TODO: Implement
+        // Notify focused client of the mouse frame event
+        wlr_cursor_set_xcursor(state->cursor, state->xcursor_manager, "default"); // TODO: Move this elsewhere
+        wlr_seat_pointer_notify_frame(state->seat);
 }
 
 void handle_new_input(struct wl_listener *listener, void *data)
 {
+        struct state *state = wl_container_of(listener, state, listener_new_input);
+        struct wlr_input_device *device = (struct wlr_input_device *)data;
+                
         wlr_log(WLR_INFO, "New input");
 
-        // TODO: Implement
+        switch (device->type) {
+        case WLR_INPUT_DEVICE_KEYBOARD:
+                break;
+        case WLR_INPUT_DEVICE_POINTER:
+                wlr_cursor_attach_input_device(state->cursor, device);
+                break;
+        default:
+                break;
+        }
 }
 
 void handle_request_set_cursor(struct wl_listener *listener, void *data)
 {
+        struct state *state = wl_container_of(listener, state, listener_request_set_cursor);
+        struct wlr_seat_pointer_request_set_cursor_event *event = (struct wlr_seat_pointer_request_set_cursor_event *)data;
+        struct wlr_seat_client *focused_client = state->seat->pointer_state.focused_client;
+
         wlr_log(WLR_INFO, "Request set cursor");
 
-        // TODO: Implement
+        // Anyone can send this request, but we must only accept
+        // cursor changes by the seat client
+        if (focused_client != event->seat_client)
+                return;
+
+        wlr_cursor_set_surface(state->cursor, event->surface, event->hotspot_x, event->hotspot_y);
 }
 
 void handle_request_set_selection(struct wl_listener *listener, void *data)
