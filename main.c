@@ -184,6 +184,8 @@ void handle_new_output(struct wl_listener *listener, void *data)
 
 void handle_cursor_motion(struct wl_listener *listener, void *data)
 {
+        // This event triggers when we have a relative mouse motion (delta)
+
         struct state *state = (struct state *)wl_container_of(listener, state, listener_cursor_motion);
 
         wlr_log(WLR_INFO, "Cursor motion");
@@ -193,9 +195,15 @@ void handle_cursor_motion(struct wl_listener *listener, void *data)
 
 void handle_cursor_motion_absolute(struct wl_listener *listener, void *data)
 {
+        // This event triggers when we have an absolute mouse motion, which
+        // can happen in things like running the compositor inside another
+        // Wayland compositor (which can set the mouse absolute position)
+        struct state *state = wl_container_of(listener, state, listener_cursor_motion_absolute);
+	struct wlr_pointer_motion_absolute_event *event = (struct wlr_pointer_motion_absolute_event *)data;
+
         wlr_log(WLR_INFO, "Cursor absolute motion");
 
-        // TODO: Implement
+	wlr_cursor_warp_absolute(state->cursor, &event->pointer->base, event->x, event->y);
 }
 
 void handle_cursor_button(struct wl_listener *listener, void *data)
