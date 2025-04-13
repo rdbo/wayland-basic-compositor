@@ -471,6 +471,7 @@ int main()
                 goto CLEAN_EXIT;
         }
         setenv("WAYLAND_DISPLAY", state.socket, true);
+        wlr_log(WLR_INFO, "Wayland socket: %s", state.socket);
 
         if (!wlr_backend_start(state.backend)) {
                 wlr_log(WLR_ERROR, "Failed to start backend");
