@@ -37,6 +37,9 @@ struct state {
         struct wlr_scene_output_layout *scene_layout;
 
         struct wlr_xdg_shell *xdg_shell;
+        struct wl_listener listener_xdg_new_toplevel;
+        struct wl_listener listener_xdg_new_popup;
+        struct wl_list toplevels;
 
         struct wlr_cursor *cursor;
         struct wlr_xcursor_manager *xcursor_manager;
@@ -72,6 +75,17 @@ struct keyboard_info {
         struct wlr_keyboard *keyboard;
         struct wl_listener listener_modifiers;
         struct wl_listener listener_key;
+        struct wl_listener listener_destroy;
+};
+
+struct toplevel_info {
+        struct wl_list link;
+        struct state *state;
+        struct wlr_xdg_toplevel *xdg_toplevel;
+        struct wlr_scene_tree *scene_tree;
+        struct wl_listener listener_map;
+        struct wl_listener listener_unmap;
+        struct wl_listener listener_commit;
         struct wl_listener listener_destroy;
 };
 
@@ -384,6 +398,101 @@ void handle_request_set_selection(struct wl_listener *listener, void *data)
         // TODO: Implement
 }
 
+void handle_xdg_toplevel_map(struct wl_listener *listener, void *data)
+{
+	struct toplevel_info *toplevel_info = wl_container_of(listener, toplevel_info, listener_map);
+	struct state *state = toplevel_info->state;
+	struct wlr_seat *seat = state->seat;
+	struct wlr_keyboard *keyboard;
+
+        wlr_log(WLR_INFO, "XDG toplevel map");
+
+        wlr_scene_node_raise_to_top(&toplevel_info->scene_tree->node);
+
+	// Activate the toplevel surface
+	wlr_xdg_toplevel_set_activated(toplevel_info->xdg_toplevel, true);
+
+	// Move keyboard focus to window
+	keyboard = wlr_seat_get_keyboard(seat);
+	if (keyboard != NULL) {
+		wlr_seat_keyboard_notify_enter(seat, toplevel_info->xdg_toplevel->base->surface,
+			keyboard->keycodes, keyboard->num_keycodes, &keyboard->modifiers);
+	}
+
+}
+
+void handle_xdg_toplevel_unmap(struct wl_listener *listener, void *data)
+{
+        wlr_log(WLR_INFO, "XDG toplevel unmap");
+}
+
+void handle_xdg_toplevel_commit(struct wl_listener *listener, void *data)
+{
+        struct toplevel_info *toplevel_info = wl_container_of(listener, toplevel_info, listener_commit);
+
+        wlr_log(WLR_INFO, "XDG toplevel commit");
+
+	if (toplevel_info->xdg_toplevel->base->initial_commit) {
+		// The compostor has to reply with a configure when the xdg_surface does an initial commit
+		// so the client can map its surface
+		wlr_xdg_toplevel_set_size(toplevel_info->xdg_toplevel, 0, 0);
+	}
+
+}
+
+void handle_xdg_toplevel_destroy(struct wl_listener *listener, void *data)
+{
+        struct toplevel_info *toplevel_info = (struct toplevel_info *)wl_container_of(listener, toplevel_info, listener_destroy);
+
+        wlr_log(WLR_INFO, "XDG toplevel destroy");
+
+        wl_list_remove(&toplevel_info->listener_map.link);
+	wl_list_remove(&toplevel_info->listener_unmap.link);
+	wl_list_remove(&toplevel_info->listener_commit.link);
+	wl_list_remove(&toplevel_info->listener_destroy.link);
+
+        wl_list_remove(&toplevel_info->link);
+        free(toplevel_info);
+}
+
+void handle_xdg_new_toplevel(struct wl_listener *listener, void *data)
+{
+        struct state *state = (struct state *)wl_container_of(listener, state, listener_xdg_new_toplevel);
+        struct wlr_xdg_toplevel *xdg_toplevel = (struct wlr_xdg_toplevel *)data;
+        struct toplevel_info *toplevel_info;
+        
+        wlr_log(WLR_INFO, "XDG new toplevel");
+
+        toplevel_info = (struct toplevel_info *)malloc(sizeof(*toplevel_info));
+        toplevel_info->state = state;
+        toplevel_info->xdg_toplevel = xdg_toplevel;
+        toplevel_info->scene_tree = wlr_scene_xdg_surface_create(&toplevel_info->state->scene->tree, xdg_toplevel->base);
+        toplevel_info->scene_tree->node.data = toplevel_info;
+	xdg_toplevel->base->data = toplevel_info->scene_tree;
+
+        // Setup events
+        toplevel_info->listener_map.notify = handle_xdg_toplevel_map;
+        wl_signal_add(&xdg_toplevel->base->surface->events.map, &toplevel_info->listener_map);
+
+        toplevel_info->listener_unmap.notify = handle_xdg_toplevel_unmap;
+        wl_signal_add(&xdg_toplevel->base->surface->events.unmap, &toplevel_info->listener_unmap);
+
+        toplevel_info->listener_commit.notify = handle_xdg_toplevel_commit;
+        wl_signal_add(&xdg_toplevel->base->surface->events.commit, &toplevel_info->listener_commit);
+
+        toplevel_info->listener_destroy.notify = handle_xdg_toplevel_destroy;
+        wl_signal_add(&xdg_toplevel->events.destroy, &toplevel_info->listener_destroy);
+
+        wl_list_insert(&state->toplevels, &toplevel_info->link);
+}
+
+void handle_xdg_new_popup(struct wl_listener *listener, void *data)
+{
+        wlr_log(WLR_INFO, "XDG new popup");
+
+        // TODO: Implement
+}
+
 int main()
 {
         struct state state = { 0 };
@@ -400,6 +509,8 @@ int main()
         // allocator (bridge for renderer to backend)
         state.backend = wlr_backend_autocreate(state.event_loop, NULL);
         state.renderer = wlr_renderer_autocreate(state.backend);
+	wlr_renderer_init_wl_display(state.renderer, state.display); // Initializes handler and shared memory buffer
+
         state.allocator = wlr_allocator_autocreate(state.backend, state.renderer);
 
         // Create compositor (allows clients to allocate surfaces) and
@@ -429,6 +540,14 @@ int main()
 
         // Create a wlr_xdg_shell which handles roles for application windows
         state.xdg_shell = wlr_xdg_shell_create(state.display, 3);
+
+        // Setup toplevel and popup surface handlers
+        // NOTE: a toplevel surface is the "main window" of a graphical application
+        state.listener_xdg_new_toplevel.notify = handle_xdg_new_toplevel;
+        wl_signal_add(&state.xdg_shell->events.new_toplevel, &state.listener_xdg_new_toplevel);
+        state.listener_xdg_new_popup.notify = handle_xdg_new_popup;
+        wl_signal_add(&state.xdg_shell->events.new_popup, &state.listener_xdg_new_popup);
+        wl_list_init(&state.toplevels);
 
         // Create a wlr_cursor to track the cursor and an xcursor manager
         // to handle Xcursor themes and cursor scaling (HiDPI)
