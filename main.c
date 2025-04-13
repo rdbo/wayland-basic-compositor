@@ -66,6 +66,15 @@ struct output_info {
         struct wl_listener listener_destroy;
 };
 
+struct keyboard_info {
+        struct wl_list link;
+        struct state *state;
+        struct wlr_keyboard *keyboard;
+        struct wl_listener listener_modifiers;
+        struct wl_listener listener_key;
+        struct wl_listener listener_destroy;
+};
+
 void handle_output_frame(struct wl_listener *listener, void *data)
 {
         struct output_info *output_info = wl_container_of(listener, output_info, listener_frame);
@@ -98,6 +107,7 @@ void handle_output_request_state(struct wl_listener *listener, void *data)
 void handle_output_destroy(struct wl_listener *listener, void *data)
 {
         struct output_info *output_info = wl_container_of(listener, output_info, listener_destroy);
+        struct state *state = output_info->state;
 
         wlr_log(WLR_INFO, "Output destroy");
 
@@ -109,6 +119,11 @@ void handle_output_destroy(struct wl_listener *listener, void *data)
         wl_list_remove(&output_info->link);
 
         free(output_info);
+
+        // Quit if there aren't any displays left
+        // TODO: Check if this can lead to issues or not
+        if (wl_list_empty(&state->outputs))
+                wl_display_terminate(state->display);
 }
 
 void handle_new_output(struct wl_listener *listener, void *data)
@@ -215,6 +230,106 @@ void handle_cursor_frame(struct wl_listener *listener, void *data)
         wlr_seat_pointer_notify_frame(state->seat);
 }
 
+void handle_keyboard_modifiers(struct wl_listener *listener, void *data)
+{
+        wlr_log(WLR_INFO, "Keyboard modifiers");
+
+        struct keyboard_info *keyboard_info = wl_container_of(listener, keyboard_info, listener_modifiers);
+
+        // There is a limitation in the wayland protocol which only allows one keyboard per seat.
+        // But it doesn't matter that much because we can just set the current keyboard to the
+        // one that triggered an event and process it normally.
+        wlr_seat_set_keyboard(keyboard_info->state->seat, keyboard_info->keyboard);
+        wlr_seat_keyboard_notify_modifiers(keyboard_info->state->seat, &keyboard_info->keyboard->modifiers);
+}
+
+void handle_keyboard_key(struct wl_listener *listener, void *data)
+{
+        wlr_log(WLR_INFO, "Keyboard key");
+
+        struct keyboard_info *keyboard_info = wl_container_of(listener, keyboard_info, listener_key);
+        struct state *state = keyboard_info->state;
+        struct wlr_keyboard_key_event *event = (struct wlr_keyboard_key_event *)data;
+        struct wlr_seat *seat = (struct wlr_seat *)state->seat;
+        uint32_t keycode;
+        const xkb_keysym_t *syms;
+        int nsyms;
+        uint32_t modifiers;
+
+        // Convert libinput keycode to xkbcommon keycode
+        keycode = event->keycode + 8;
+        nsyms = xkb_state_key_get_syms(keyboard_info->keyboard->xkb_state, keycode, &syms);
+
+        modifiers = wlr_keyboard_get_modifiers(keyboard_info->keyboard);
+
+        // TODO: Skip modifiers on key listener
+        if ((modifiers & WLR_MODIFIER_ALT) && event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+                int i;
+                char buf[128];
+
+                xkb_state_key_get_utf8(keyboard_info->keyboard->xkb_state, keycode, buf, sizeof(buf));
+                wlr_log(WLR_INFO, "Handling key press internally (modifier was set): %s", buf);
+
+                for (i = 0; i < nsyms; ++i) {
+                        switch (syms[i]) {
+                        case XKB_KEY_q:
+                        case XKB_KEY_Q:
+                                wl_display_terminate(state->display);
+                                return;
+                        default:
+                                break;
+                        }
+                }
+        }
+
+        // If we didn't handle the key event internally, we forward it to the client
+        wlr_seat_set_keyboard(seat, keyboard_info->keyboard);
+	wlr_seat_keyboard_notify_key(seat, event->time_msec, event->keycode, event->state);
+        wlr_log(WLR_INFO, "Key event forwarded to seat");
+}
+
+void handle_keyboard_destroy(struct wl_listener *listener, void *data)
+{
+        wlr_log(WLR_INFO, "Keyboard destroy");
+
+        struct keyboard_info *keyboard_info = wl_container_of(listener, keyboard_info, listener_destroy);
+	wl_list_remove(&keyboard_info->listener_modifiers.link);
+	wl_list_remove(&keyboard_info->listener_key.link);
+	wl_list_remove(&keyboard_info->listener_destroy.link);
+	wl_list_remove(&keyboard_info->link);
+	free(keyboard_info);
+}
+
+void setup_new_keyboard(struct state *state, struct wlr_input_device *device)
+{
+        struct wlr_keyboard *keyboard = wlr_keyboard_from_input_device(device);
+        struct keyboard_info *keyboard_info = malloc(sizeof(*keyboard_info));
+        struct xkb_context *xkb_context;
+        struct xkb_keymap *xkb_keymap;
+
+        keyboard_info->state = state;
+        keyboard_info->keyboard = keyboard;
+
+        // Setup XKB keymap for this keyboard with its defaults
+        // (e.g US layout)
+        xkb_context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+        xkb_keymap = xkb_keymap_new_from_names(xkb_context, NULL, XKB_KEYMAP_COMPILE_NO_FLAGS);
+        wlr_keyboard_set_keymap(keyboard, xkb_keymap);
+        wlr_keyboard_set_repeat_info(keyboard, 50, 300); // Key repeat frequency and delay
+
+        // Setup keyboard event listeners
+        keyboard_info->listener_modifiers.notify = handle_keyboard_modifiers;
+        wl_signal_add(&keyboard->events.modifiers, &keyboard_info->listener_modifiers);
+        keyboard_info->listener_key.notify = handle_keyboard_key;
+        wl_signal_add(&keyboard->events.key, &keyboard_info->listener_key);
+        keyboard_info->listener_destroy.notify = handle_keyboard_destroy;
+        wl_signal_add(&device->events.destroy, &keyboard_info->listener_destroy);
+
+        // Finish keyboard setup
+        wlr_seat_set_keyboard(state->seat, keyboard_info->keyboard);
+        wl_list_insert(&state->keyboards, &keyboard_info->link);
+}
+
 void handle_new_input(struct wl_listener *listener, void *data)
 {
         struct state *state = wl_container_of(listener, state, listener_new_input);
@@ -224,6 +339,7 @@ void handle_new_input(struct wl_listener *listener, void *data)
 
         switch (device->type) {
         case WLR_INPUT_DEVICE_KEYBOARD:
+                setup_new_keyboard(state, device);
                 break;
         case WLR_INPUT_DEVICE_POINTER:
                 wlr_cursor_attach_input_device(state->cursor, device);
