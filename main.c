@@ -185,12 +185,14 @@ void handle_new_output(struct wl_listener *listener, void *data)
 void handle_cursor_motion(struct wl_listener *listener, void *data)
 {
         // This event triggers when we have a relative mouse motion (delta)
-
         struct state *state = (struct state *)wl_container_of(listener, state, listener_cursor_motion);
+	struct wlr_pointer_motion_event *event = (struct wlr_pointer_motion_event *)data;
 
         wlr_log(WLR_INFO, "Cursor motion");
 
         wlr_cursor_set_xcursor(state->cursor, state->xcursor_manager, "default");
+        wlr_cursor_move(state->cursor, &event->pointer->base, event->delta_x, event->delta_y);
+        wlr_seat_pointer_clear_focus(state->seat);
 }
 
 void handle_cursor_motion_absolute(struct wl_listener *listener, void *data)
@@ -203,7 +205,9 @@ void handle_cursor_motion_absolute(struct wl_listener *listener, void *data)
 
         wlr_log(WLR_INFO, "Cursor absolute motion");
 
+	wlr_cursor_set_xcursor(state->cursor, state->xcursor_manager, "default");
 	wlr_cursor_warp_absolute(state->cursor, &event->pointer->base, event->x, event->y);
+        wlr_seat_pointer_clear_focus(state->seat);
 }
 
 void handle_cursor_button(struct wl_listener *listener, void *data)
